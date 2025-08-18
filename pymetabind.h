@@ -6,7 +6,10 @@
  * This functionality is intended to be used by the framework itself,
  * rather than by users of the framework.
  *
- * This is version 0.1 of pymetabind. Changelog:
+ * This is version 0.1+dev of pymetabind. Changelog:
+ *
+ *      Unreleased: Fix typo in Py_GIL_DISABLED. Add pymb_framework::leak_safe.
+ *                  Add casts from PyTypeObject* to PyObject* where needed.
  *
  *     Version 0.1: Initial draft. ABI may change without warning while we
  *      2025-08-16  prove out the concept. Please wait for a 1.0 release
@@ -250,8 +253,15 @@ struct pymb_framework {
     // this framework's bindings in free-threaded builds.
     uint8_t bindings_usable_forever;
 
+    // Does this framework reliably deallocate all of its type and function
+    // objects by the time the Python interpreter is finalized, in the absence
+    // of bugs in user code? If not, it might cause leaks of other frameworks'
+    // types or functions, via attributes or default argument values for
+    // this framework's leaked objects.
+    uint8_t leak_safe;
+
     // Reserved for future extensions. Set to 0.
-    uint8_t reserved[3];
+    uint8_t reserved[2];
 
     // The language to which this framework provides bindings: one of the
     // `pymb_abi_lang` enumerators.
@@ -605,7 +615,7 @@ PYMB_FUNC void pymb_add_framework(struct pymb_registry* registry,
 PYMB_FUNC void pymb_add_binding(struct pymb_registry* registry,
                                 struct pymb_binding* binding) {
 #if defined(Py_GIL_DISABLED) && PY_VERSION_HEX >= 0x030e0000
-    PyUnstable_EnableTryIncRef(binding->pytype);
+    PyUnstable_EnableTryIncRef((PyObject *) binding->pytype);
 #endif
     PyObject* capsule = PyCapsule_New(binding, "pymetabind_binding", NULL);
     int rv = -1;
@@ -654,7 +664,7 @@ PYMB_FUNC int pymb_try_ref_binding(struct pymb_binding* binding) {
 #if defined(Py_GIL_DISABLED)
     if (!binding->framework->bindings_usable_forever) {
 #if PY_VERSION_HEX >= 0x030e0000
-        return PyUnstable_TryIncRef(binding->pytype);
+        return PyUnstable_TryIncRef((PyObject *) binding->pytype);
 #else
         // bindings_usable_forever is required on this Python version, and
         // was checked in pymb_add_framework()
@@ -662,7 +672,7 @@ PYMB_FUNC int pymb_try_ref_binding(struct pymb_binding* binding) {
 #endif
     }
 #else
-    Py_INCREF(binding->pytype);
+    Py_INCREF((PyObject *) binding->pytype);
 #endif
     return 1;
 }
@@ -672,7 +682,7 @@ PYMB_FUNC void pymb_unref_binding(struct pymb_binding* binding) {
 #if defined(Py_GIL_DISABLED)
     if (!binding->framework->bindings_usable_forever) {
 #if PY_VERSION_HEX >= 0x030e0000
-        Py_DECREF(binding->pytype);
+        Py_DECREF((PyObject *) binding->pytype);
 #else
         // bindings_usable_forever is required on this Python version, and
         // was checked in pymb_add_framework()
@@ -680,7 +690,7 @@ PYMB_FUNC void pymb_unref_binding(struct pymb_binding* binding) {
 #endif
     }
 #else
-    Py_DECREF(binding->pytype);
+    Py_DECREF((PyObject *) binding->pytype);
 #endif
 }
 
