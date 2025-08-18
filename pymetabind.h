@@ -195,7 +195,7 @@ struct pymb_registry {
 #endif
 };
 
-#if defined(Py_GIL_DISALED)
+#if defined(Py_GIL_DISABLED)
 inline void pymb_lock_registry(struct pymb_registry* registry) {
     PyMutex_Lock(&registry->mutex);
 }
