@@ -635,7 +635,8 @@ PYMB_FUNC void pymb_add_framework(struct pymb_registry* registry,
     PYMB_LIST_FOREACH(struct pymb_framework*, other, registry->frameworks) {
         // Intern `abi_extra` strings so they can be compared by pointer
         if (other->abi_extra && framework->abi_extra &&
-            0 == strcmp(other->abi_extra, framework->abi_extra)) {
+            (other->abi_extra == framework->abi_extra ||
+             strcmp(other->abi_extra, framework->abi_extra) == 0)) {
             framework->abi_extra = other->abi_extra;
             break;
         }
