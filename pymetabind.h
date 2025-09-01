@@ -53,7 +53,7 @@
 
 /*
  * There are two ways to use this header file. The default is header-only style,
- * where all functions are defined as `inline`. If you want to emit functions
+ * where all functions are defined as `inline` (C++) / `static inline` (C). If you want to emit functions
  * as non-inline, perhaps so you can link against them from non-C/C++ code,
  * then do the following:
  * - In every compilation unit that includes this header, `#define PYMB_FUNC`
@@ -65,7 +65,11 @@
  *   compilation unit that doesn't request `PYMB_DECLS_ONLY`.
  */
 #if !defined(PYMB_FUNC)
-#define PYMB_FUNC inline
+#  ifdef __cplusplus
+#    define PYMB_FUNC inline
+#  else
+#    define PYMB_FUNC static inline
+#  endif
 #endif
 
 #if defined(__cplusplus)
