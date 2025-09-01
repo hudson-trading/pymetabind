@@ -50,7 +50,7 @@
 
 /*
  * There are two ways to use this header file. The default is header-only style,
- * where all functions are defined as `inline`. If you want to emit functions
+ * where all functions are defined as `inline` (C++) / `static inline` (C). If you want to emit functions
  * as non-inline, perhaps so you can link against them from non-C/C++ code,
  * then do the following:
  * - In every compilation unit that includes this header, `#define PYMB_FUNC`
@@ -62,7 +62,11 @@
  *   compilation unit that doesn't request `PYMB_DECLS_ONLY`.
  */
 #if !defined(PYMB_FUNC)
-#define PYMB_FUNC inline
+#  ifdef __cplusplus
+#    define PYMB_FUNC inline
+#  else
+#    define PYMB_FUNC static inline
+#  endif
 #endif
 
 #if defined(__cplusplus)
@@ -530,6 +534,17 @@ PYMB_FUNC struct pymb_binding* pymb_get_binding(PyObject* type);
 
 #if !defined(PYMB_DECLS_ONLY)
 
+static void pymb_registry_capsule_destructor(PyObject* capsule) {
+    struct pymb_registry* registry =
+        (struct pymb_registry*) PyCapsule_GetPointer(
+            capsule, "pymetabind_registry");
+    if (!registry) {
+        PyErr_WriteUnraisable(capsule);
+        return;
+    }
+    free(registry);
+}
+
 /*
  * Locate an existing `pymb_registry`, or create a new one if necessary.
  * Returns a pointer to it, or NULL with the CPython error indicator set.
@@ -560,11 +575,13 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
     if (registry) {
         pymb_list_init(&registry->frameworks);
         pymb_list_init(&registry->bindings);
-        capsule = PyCapsule_New(registry, "pymetabind_registry", NULL);
-        int rv = capsule ? PyDict_SetItem(dict, key, capsule) : -1;
-        Py_XDECREF(capsule);
-        if (rv != 0) {
-            free(registry);
+        /* attach a destructor so the registry memory is released at teardown */
+        capsule = PyCapsule_New(registry, "pymetabind_registry",
+                                pymb_registry_capsule_destructor);
+        if (capsule && PyDict_SetItem(dict, key, capsule) == 0) {
+            Py_DECREF(capsule);
+        } else {
+            Py_XDECREF(capsule);
             registry = NULL;
         }
     } else {
@@ -586,11 +603,15 @@ PYMB_FUNC void pymb_add_framework(struct pymb_registry* registry,
            "Free-threaded removal of bindings requires PyUnstable_TryIncRef(), "
            "which was added in CPython 3.14");
 #endif
+    // Defensive: ensure hook is clean before first list insertion to avoid UB
+    framework->hook.next = NULL;
+    framework->hook.prev = NULL;
     pymb_lock_registry(registry);
     PYMB_LIST_FOREACH(struct pymb_framework*, other, registry->frameworks) {
         // Intern `abi_extra` strings so they can be compared by pointer
         if (other->abi_extra && framework->abi_extra &&
-            0 == strcmp(other->abi_extra, framework->abi_extra)) {
+            (other->abi_extra == framework->abi_extra ||
+             strcmp(other->abi_extra, framework->abi_extra) == 0)) {
             framework->abi_extra = other->abi_extra;
             break;
         }
@@ -617,6 +638,9 @@ PYMB_FUNC void pymb_add_binding(struct pymb_registry* registry,
 #if defined(Py_GIL_DISABLED) && PY_VERSION_HEX >= 0x030e0000
     PyUnstable_EnableTryIncRef((PyObject *) binding->pytype);
 #endif
+    // Defensive: ensure hook is clean before first list insertion to avoid UB
+    binding->hook.next = NULL;
+    binding->hook.prev = NULL;
     PyObject* capsule = PyCapsule_New(binding, "pymetabind_binding", NULL);
     int rv = -1;
     if (capsule) {
