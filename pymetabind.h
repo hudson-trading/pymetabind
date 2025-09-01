@@ -562,6 +562,17 @@ PYMB_FUNC struct pymb_binding* pymb_get_binding(PyObject* type);
 
 #if !defined(PYMB_DECLS_ONLY)
 
+static void pymb_registry_capsule_destructor(PyObject* capsule) {
+    struct pymb_registry* registry =
+        (struct pymb_registry*) PyCapsule_GetPointer(
+            capsule, "pymetabind_registry");
+    if (!registry) {
+        PyErr_WriteUnraisable(capsule);
+        return;
+    }
+    free(registry);
+}
+
 /*
  * Locate an existing `pymb_registry`, or create a new one if necessary.
  * Returns a pointer to it, or NULL with the CPython error indicator set.
@@ -592,11 +603,13 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
     if (registry) {
         pymb_list_init(&registry->frameworks);
         pymb_list_init(&registry->bindings);
-        capsule = PyCapsule_New(registry, "pymetabind_registry", NULL);
-        int rv = capsule ? PyDict_SetItem(dict, key, capsule) : -1;
-        Py_XDECREF(capsule);
-        if (rv != 0) {
-            free(registry);
+        /* attach a destructor so the registry memory is released at teardown */
+        capsule = PyCapsule_New(registry, "pymetabind_registry",
+                                pymb_registry_capsule_destructor);
+        if (capsule && PyDict_SetItem(dict, key, capsule) == 0) {
+            Py_DECREF(capsule);
+        } else {
+            Py_XDECREF(capsule);
             registry = NULL;
         }
     } else {
