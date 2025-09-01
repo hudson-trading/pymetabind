@@ -631,6 +631,9 @@ PYMB_FUNC void pymb_add_framework(struct pymb_registry* registry,
            "Free-threaded removal of bindings requires PyUnstable_TryIncRef(), "
            "which was added in CPython 3.14");
 #endif
+    // Defensive: ensure hook is clean before first list insertion to avoid UB
+    framework->hook.next = NULL;
+    framework->hook.prev = NULL;
     pymb_lock_registry(registry);
     PYMB_LIST_FOREACH(struct pymb_framework*, other, registry->frameworks) {
         // Intern `abi_extra` strings so they can be compared by pointer
@@ -663,6 +666,9 @@ PYMB_FUNC void pymb_add_binding(struct pymb_registry* registry,
 #if defined(Py_GIL_DISABLED) && PY_VERSION_HEX >= 0x030e0000
     PyUnstable_EnableTryIncRef((PyObject *) binding->pytype);
 #endif
+    // Defensive: ensure hook is clean before first list insertion to avoid UB
+    binding->hook.next = NULL;
+    binding->hook.prev = NULL;
     PyObject* capsule = PyCapsule_New(binding, "pymetabind_binding", NULL);
     int rv = -1;
     if (capsule) {
