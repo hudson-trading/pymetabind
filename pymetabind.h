@@ -13,6 +13,10 @@
  *                  Add casts from PyTypeObject* to PyObject* where needed.
  *                  Fix typo in Py_GIL_DISABLED. Add noexcept to callback types.
  *                  Rename `hook` -> `link` in linked list nodes.
+ *                  Use `static inline` linkage in C. Free registry on exit.
+ *                  Clear list hooks when adding frameworks/bindings in case
+ *                  the user didn't zero-initialize. Avoid abi_extra string
+ *                  comparisons if the strings are already pointer-equal.
  *
  *     Version 0.1: Initial draft. ABI may change without warning while we
  *      2025-08-16  prove out the concept. Please wait for a 1.0 release
@@ -53,9 +57,9 @@
 
 /*
  * There are two ways to use this header file. The default is header-only style,
- * where all functions are defined as `inline` (C++) / `static inline` (C). If you want to emit functions
- * as non-inline, perhaps so you can link against them from non-C/C++ code,
- * then do the following:
+ * where all functions are defined as `inline` (C++) / `static inline` (C).
+ * If you want to emit functions as non-inline, perhaps so you can link against
+ * them from non-C/C++ code, then do the following:
  * - In every compilation unit that includes this header, `#define PYMB_FUNC`
  *   first. (The `PYMB_FUNC` macro will be expanded in place of the "inline"
  *   keyword, so you can also use it to add any other declaration attributes
@@ -550,8 +554,6 @@ struct pymb_binding {
 PYMB_FUNC struct pymb_registry* pymb_get_registry();
 PYMB_FUNC void pymb_add_framework(struct pymb_registry* registry,
                                   struct pymb_framework* framework);
-PYMB_FUNC void pymb_remove_framework(struct pymb_registry* registry,
-                                     struct pymb_framework* framework);
 PYMB_FUNC void pymb_add_binding(struct pymb_registry* registry,
                                 struct pymb_binding* binding);
 PYMB_FUNC void pymb_remove_binding(struct pymb_registry* registry,
@@ -562,10 +564,10 @@ PYMB_FUNC struct pymb_binding* pymb_get_binding(PyObject* type);
 
 #if !defined(PYMB_DECLS_ONLY)
 
-static void pymb_registry_capsule_destructor(PyObject* capsule) {
+PYMB_FUNC void pymb_registry_capsule_destructor(PyObject* capsule) {
     struct pymb_registry* registry =
-        (struct pymb_registry*) PyCapsule_GetPointer(
-            capsule, "pymetabind_registry");
+            (struct pymb_registry*) PyCapsule_GetPointer(
+                    capsule, "pymetabind_registry");
     if (!registry) {
         PyErr_WriteUnraisable(capsule);
         return;
@@ -603,15 +605,15 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
     if (registry) {
         pymb_list_init(&registry->frameworks);
         pymb_list_init(&registry->bindings);
-        /* attach a destructor so the registry memory is released at teardown */
+        // Attach a destructor so the registry memory is released at teardown
         capsule = PyCapsule_New(registry, "pymetabind_registry",
                                 pymb_registry_capsule_destructor);
-        if (capsule && PyDict_SetItem(dict, key, capsule) == 0) {
-            Py_DECREF(capsule);
-        } else {
-            Py_XDECREF(capsule);
-            registry = NULL;
+        if (!capsule) {
+            free(registry);
+        } else if (PyDict_SetItem(dict, key, capsule) == -1) {
+            registry = NULL; // will be deallocated by capsule destructor
         }
+        Py_XDECREF(capsule);
     } else {
         PyErr_NoMemory();
     }
