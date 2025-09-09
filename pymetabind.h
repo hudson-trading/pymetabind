@@ -202,6 +202,11 @@ struct pymb_registry {
     // Linked list of registered `pymb_binding` structures
     struct pymb_list bindings;
 
+    // Borrowed back-reference to the capsule that contains this registry.
+    // Used by pymb_add_framework() and pymb_remove_framework() to manage
+    // the capsule's lifeetime.
+    PyObject* capsule;
+
     // Reserved for future extensions; currently set to 0
     uint32_t reserved;
 
@@ -261,7 +266,7 @@ enum pymb_framework_flags {
  * and unmodified (except as documented below) until the Python interpreter
  * is finalized. After finalization, such as in a `Py_AtExit` handler, if
  * all bindings have been removed already, you may optionally clean up by
- * calling `pymb_list_unlink(&framework->link)` and then deallocating the
+ * calling `pymb_remove_framework()` and then deallocating the
  * `pymb_framework` structure.
  *
  * All fields of this structure are set before it is made visible to other
@@ -554,6 +559,8 @@ struct pymb_binding {
 PYMB_FUNC struct pymb_registry* pymb_get_registry();
 PYMB_FUNC void pymb_add_framework(struct pymb_registry* registry,
                                   struct pymb_framework* framework);
+PYMB_FUNC void pymb_remove_framework(struct pymb_registry* registry,
+                                     struct pymb_framework* framework);
 PYMB_FUNC void pymb_add_binding(struct pymb_registry* registry,
                                 struct pymb_binding* binding);
 PYMB_FUNC void pymb_remove_binding(struct pymb_registry* registry,
@@ -610,8 +617,13 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
                                 pymb_registry_capsule_destructor);
         if (!capsule) {
             free(registry);
-        } else if (PyDict_SetItem(dict, key, capsule) == -1) {
-            registry = NULL; // will be deallocated by capsule destructor
+        } else {
+            // Store borrowed reference to the capsule to manage registry lifetime
+            // in pymb_add_framework and pymb_remove_framework
+            registry->capsule = capsule;
+            if (PyDict_SetItem(dict, key, capsule) == -1) {
+                registry = NULL; // will be deallocated by capsule destructor
+            }
         }
         Py_XDECREF(capsule);
     } else {
@@ -634,8 +646,8 @@ PYMB_FUNC void pymb_add_framework(struct pymb_registry* registry,
            "which was added in CPython 3.14");
 #endif
     // Defensive: ensure hook is clean before first list insertion to avoid UB
-    framework->hook.next = NULL;
-    framework->hook.prev = NULL;
+    framework->link.next = NULL;
+    framework->link.prev = NULL;
     pymb_lock_registry(registry);
     PYMB_LIST_FOREACH(struct pymb_framework*, other, registry->frameworks) {
         // Intern `abi_extra` strings so they can be compared by pointer
@@ -647,6 +659,9 @@ PYMB_FUNC void pymb_add_framework(struct pymb_registry* registry,
         }
     }
     pymb_list_append(&registry->frameworks, &framework->link);
+    // Increment capsule reference count so registry stays alive until
+    // all frameworks have been removed
+    Py_INCREF(registry->capsule);
     PYMB_LIST_FOREACH(struct pymb_framework*, other, registry->frameworks) {
         if (other != framework) {
             other->add_foreign_framework(framework);
@@ -662,6 +677,23 @@ PYMB_FUNC void pymb_add_framework(struct pymb_registry* registry,
     pymb_unlock_registry(registry);
 }
 
+/*
+ * Remove a framework from the given registry. This should only be called
+ * during Python interpreter finalization to ensure proper lifetime management
+ * of the registry. Once this function returns, you can free the
+ * framework structure.
+ */
+PYMB_FUNC void pymb_remove_framework(struct pymb_registry* registry,
+                                     struct pymb_framework* framework) {
+    pymb_lock_registry(registry);
+    pymb_list_unlink(&framework->link);
+    pymb_unlock_registry(registry);
+
+    // Decrement capsule reference count; registry will be destroyed when
+    // the last framework is removed and interpreter state dict is cleared
+    Py_DECREF(registry->capsule);
+}
+
 /* Add a new binding to the given registry */
 PYMB_FUNC void pymb_add_binding(struct pymb_registry* registry,
                                 struct pymb_binding* binding) {
@@ -669,8 +701,8 @@ PYMB_FUNC void pymb_add_binding(struct pymb_registry* registry,
     PyUnstable_EnableTryIncRef((PyObject *) binding->pytype);
 #endif
     // Defensive: ensure hook is clean before first list insertion to avoid UB
-    binding->hook.next = NULL;
-    binding->hook.prev = NULL;
+    binding->link.next = NULL;
+    binding->link.prev = NULL;
     PyObject* capsule = PyCapsule_New(binding, "pymetabind_binding", NULL);
     int rv = -1;
     if (capsule) {
