@@ -428,9 +428,15 @@ struct pymb_framework {
     // The `pymb_registry::mutex` or GIL will be held when calling this method.
     void (*add_foreign_framework)(struct pymb_framework* framework) PYMB_NOEXCEPT;
 
-    // There is no remove_foreign_framework(); the interpreter has
-    // already been finalized at that point, so there's nothing for the
-    // callback to do.
+    // Notify this framework that some other framework is being destroyed.
+    // This call will be made after the framework has been removed from the
+    // `pymb_registry::frameworks` list.
+    //
+    // This can only occur during interpreter finalization, so no
+    // synchronization is required. It might occur very late in interpreter
+    // finalization, such as from a Py_AtExit handler, so it shouldn't
+    // execute Python code.
+    void (*remove_foreign_framework)(struct pymb_framework* framework) PYMB_NOEXCEPT;
 };
 
 /*
@@ -682,16 +688,32 @@ PYMB_FUNC void pymb_add_framework(struct pymb_registry* registry,
 }
 
 /*
- * Remove a framework from the given registry. This should only be called
- * during Python interpreter finalization to ensure proper lifetime management
- * of the registry. Once this function returns, you can free the
- * framework structure.
+ * Remove a framework from the registry it was added to.
+ *
+ * This may only be called during Python interpreter finalization. Rationale:
+ * other frameworks might be maintaining an entry for the removed one in their
+ * exception translator lists, and supporting concurrent removal of exception
+ * translators would add undesirable synchronization overhead to the handling
+ * of every exception. At finalization time there are no more threads.
+ *
+ * Once this function returns, you can free the framework structure.
+ *
+ * If a framework never removes itself, it must not claim to be `leak_safe`.
  */
 PYMB_FUNC void pymb_remove_framework(struct pymb_registry* registry,
                                      struct pymb_framework* framework) {
-    pymb_lock_registry(registry);
+#if PY_VERSION_HEX >= 0x030d0000
+    // Required on all Python versions, but only 3.13+ has the API to check
+    assert(Py_IsFinalizing() &&
+           "pymb_remove_framework() may only be called during interpreter "
+           "finalization");
+#endif
+
+    // No need for registry lock/unlock since there are no more threads
     pymb_list_unlink(&framework->link);
-    pymb_unlock_registry(registry);
+    PYMB_LIST_FOREACH(struct pymb_framework*, other, registry->frameworks) {
+        other->remove_foreign_framework(framework);
+    }
 
     // Decrement capsule reference count; registry will be destroyed when
     // the last framework is removed and interpreter state dict is cleared
