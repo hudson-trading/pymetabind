@@ -611,41 +611,111 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
 #else
     PyObject* dict = PyInterpreterState_GetDict(PyInterpreterState_Get());
 #endif
-    PyObject* key = PyUnicode_FromString("__pymetabind_registry__");
-    if (!dict || !key) {
-        Py_XDECREF(key);
+    
+    if (!dict) {
         return NULL;
     }
-    PyObject* capsule = PyDict_GetItem(dict, key);
-    if (capsule) {
+    
+    PyObject* key = PyUnicode_FromString("__pymetabind_registry__");
+    if (!key) {
+        return NULL;
+    }
+    
+#if PY_VERSION_HEX >= 0x030D0000
+    // 3.13+/free-threaded: use strong-ref APIs
+    PyObject* existing_capsule = PyDict_GetItemRef(dict, key);
+    if (existing_capsule) {
+        Py_DECREF(key);
+        pymb_registry* registry = (struct pymb_registry*) PyCapsule_GetPointer(
+                existing_capsule, "pymetabind_registry");
+        Py_DECREF(existing_capsule);
+        // WARNING: The returned pointer is only valid while the interpreter
+        // dict contains the registry capsule! Is technically possible that in
+        // free threaded builds another thread clears the capsule (by getting
+        // the interpreter dict and calling clear() on it or deleting/replacing
+        // the key) and we just removed our last reference to it so the registry
+        // pointer is now freed memory :(
+        return registry;
+    }
+#else
+    // Older CPython: borrowed ref is OK as long as GIL is held
+    PyObject* existing_capsule = PyDict_GetItem(dict, key);
+    if (existing_capsule) {
+        // WARNING: See above
         Py_DECREF(key);
         return (struct pymb_registry*) PyCapsule_GetPointer(
-                capsule, "pymetabind_registry");
+                existing_capsule, "pymetabind_registry");
     }
-    struct pymb_registry* registry;
-    registry = (struct pymb_registry*) calloc(1, sizeof(*registry));
-    if (registry) {
-        pymb_list_init(&registry->frameworks);
-        pymb_list_init(&registry->bindings);
-        // Attach a destructor so the registry memory is released at teardown
-        capsule = PyCapsule_New(registry, "pymetabind_registry",
-                                pymb_registry_capsule_destructor);
-        if (!capsule) {
-            free(registry);
-        } else {
-            // Store borrowed reference to the capsule to manage registry lifetime
-            // in pymb_add_framework and pymb_remove_framework
-            registry->capsule = capsule;
-            if (PyDict_SetItem(dict, key, capsule) == -1) {
-                registry = NULL; // will be deallocated by capsule destructor
-            }
-        }
-        Py_XDECREF(capsule);
-    } else {
+#endif
+
+    // Create new registry
+    struct pymb_registry* registry = (struct pymb_registry*) calloc(1, sizeof(*registry));
+    if (!registry) {
+        Py_DECREF(key);
         PyErr_NoMemory();
+        return NULL;
     }
+    
+    pymb_list_init(&registry->frameworks);
+    pymb_list_init(&registry->bindings);
+    
+    // Create capsule for our new registry
+    PyObject* new_capsule = PyCapsule_New(registry, "pymetabind_registry",
+                                          pymb_registry_capsule_destructor);
+    if (!new_capsule) {
+        free(registry);
+        Py_DECREF(key);
+        return NULL;
+    }
+    
+#if PY_VERSION_HEX >= 0x030D0000  // Python 3.13+ and free threaded Python
+    PyObject* result_capsule = NULL;
+    int status = PyDict_SetDefaultRef(dict, key, new_capsule, &result_capsule);
     Py_DECREF(key);
-    return registry;
+    
+    if (status == -1) {
+        // Error occurred
+        Py_DECREF(new_capsule);
+        return NULL;
+    } else if (status == 1) {
+        // Key was already present, someone else won the race
+        Py_DECREF(new_capsule);
+        
+        // Extract registry from the existing capsule (result_capsule is a strong ref)
+        struct pymb_registry* existing_registry = 
+            (struct pymb_registry*) PyCapsule_GetPointer(result_capsule, "pymetabind_registry");
+        Py_DECREF(result_capsule);
+        return existing_registry;
+    } else {
+        // status == 0: We successfully inserted our capsule
+        registry->capsule = new_capsule;
+        Py_DECREF(new_capsule);
+        Py_DECREF(result_capsule);
+        return registry;
+    }
+#else
+    // For older Python versions, use PyDict_SetDefault
+    PyObject* result_capsule = PyDict_SetDefault(dict, key, new_capsule);
+    Py_DECREF(key);
+    
+    if (!result_capsule) {
+        // Error occurred during setdefault
+        Py_DECREF(new_capsule);
+        return NULL;
+    }
+    
+    if (result_capsule == new_capsule) {
+        // We won the race - our capsule was inserted
+        registry->capsule = new_capsule;
+        return registry;
+    } 
+
+    // Someone else won the race - use their registry
+    Py_DECREF(new_capsule);
+    
+    return (struct pymb_registry*) PyCapsule_GetPointer(
+            result_capsule, "pymetabind_registry");
+#endif
 }
 
 /*
