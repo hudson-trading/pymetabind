@@ -6,10 +6,10 @@
  * This functionality is intended to be used by the framework itself,
  * rather than by users of the framework.
  *
- * This is version 0.1+dev of pymetabind. Changelog:
+ * This is version 0.2 of pymetabind. Changelog:
  *
- *      Unreleased: Use a bitmask for `pymb_framework::flags` and add leak_safe
- *                  flag. Change `translate_exception` to be non-throwing.
+ *     Version 0.2: Use a bitmask for `pymb_framework::flags` and add leak_safe
+ *      2025-09-11  flag. Change `translate_exception` to be non-throwing.
  *                  Add casts from PyTypeObject* to PyObject* where needed.
  *                  Fix typo in Py_GIL_DISABLED. Add noexcept to callback types.
  *                  Rename `hook` -> `link` in linked list nodes.
@@ -17,6 +17,7 @@
  *                  Clear list hooks when adding frameworks/bindings in case
  *                  the user didn't zero-initialize. Avoid abi_extra string
  *                  comparisons if the strings are already pointer-equal.
+ *                  Add `remove_foreign_framework` callback.
  *
  *     Version 0.1: Initial draft. ABI may change without warning while we
  *      2025-08-16  prove out the concept. Please wait for a 1.0 release
@@ -229,8 +230,12 @@ PYMB_INLINE void pymb_unlock_registry(struct pymb_registry* registry) {
     PyMutex_Unlock(&registry->mutex);
 }
 #else
-PYMB_INLINE void pymb_lock_registry(struct pymb_registry*) {}
-PYMB_INLINE void pymb_unlock_registry(struct pymb_registry*) {}
+PYMB_INLINE void pymb_lock_registry(struct pymb_registry* registry) {
+    (void) registry;
+}
+PYMB_INLINE void pymb_unlock_registry(struct pymb_registry* registry) {
+    (void) registry;
+}
 #endif
 
 struct pymb_binding;
