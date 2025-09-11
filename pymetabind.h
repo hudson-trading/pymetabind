@@ -55,6 +55,14 @@
 #  error You must include Python.h before this header
 #endif
 
+// `inline` in C implies a promise to provide an out-of-line definition
+// elsewhere; in C++ it does not.
+#ifdef __cplusplus
+#  define PYMB_INLINE inline
+#else
+#  define PYMB_INLINE static inline
+#endif
+
 /*
  * There are two ways to use this header file. The default is header-only style,
  * where all functions are defined as `inline` (C++) / `static inline` (C).
@@ -69,11 +77,7 @@
  *   compilation unit that doesn't request `PYMB_DECLS_ONLY`.
  */
 #if !defined(PYMB_FUNC)
-#  ifdef __cplusplus
-#    define PYMB_FUNC inline
-#  else
-#    define PYMB_FUNC static inline
-#  endif
+#define PYMB_FUNC PYMB_INLINE
 #endif
 
 #if defined(__cplusplus)
@@ -149,11 +153,11 @@ struct pymb_list {
     struct pymb_list_node head;
 };
 
-inline void pymb_list_init(struct pymb_list* list) {
+PYMB_INLINE void pymb_list_init(struct pymb_list* list) {
     list->head.prev = list->head.next = &list->head;
 }
 
-inline void pymb_list_unlink(struct pymb_list_node* node) {
+PYMB_INLINE void pymb_list_unlink(struct pymb_list_node* node) {
     if (node->next) {
         node->next->prev = node->prev;
         node->prev->next = node->next;
@@ -161,8 +165,8 @@ inline void pymb_list_unlink(struct pymb_list_node* node) {
     }
 }
 
-inline void pymb_list_append(struct pymb_list* list,
-                             struct pymb_list_node* node) {
+PYMB_INLINE void pymb_list_append(struct pymb_list* list,
+                                  struct pymb_list_node* node) {
     pymb_list_unlink(node);
     struct pymb_list_node* tail = list->head.prev;
     tail->next = node;
@@ -204,7 +208,7 @@ struct pymb_registry {
 
     // Borrowed back-reference to the capsule that contains this registry.
     // Used by pymb_add_framework() and pymb_remove_framework() to manage
-    // the capsule's lifeetime.
+    // the capsule's lifetime.
     PyObject* capsule;
 
     // Reserved for future extensions; currently set to 0
@@ -218,15 +222,15 @@ struct pymb_registry {
 };
 
 #if defined(Py_GIL_DISABLED)
-inline void pymb_lock_registry(struct pymb_registry* registry) {
+PYMB_INLINE void pymb_lock_registry(struct pymb_registry* registry) {
     PyMutex_Lock(&registry->mutex);
 }
-inline void pymb_unlock_registry(struct pymb_registry* registry) {
+PYMB_INLINE void pymb_unlock_registry(struct pymb_registry* registry) {
     PyMutex_Unlock(&registry->mutex);
 }
 #else
-inline void pymb_lock_registry(struct pymb_registry*) {}
-inline void pymb_unlock_registry(struct pymb_registry*) {}
+PYMB_INLINE void pymb_lock_registry(struct pymb_registry*) {}
+PYMB_INLINE void pymb_unlock_registry(struct pymb_registry*) {}
 #endif
 
 struct pymb_binding;
