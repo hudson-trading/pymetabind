@@ -6,7 +6,10 @@
  * This functionality is intended to be used by the framework itself,
  * rather than by users of the framework.
  *
- * This is version 0.2 of pymetabind. Changelog:
+ * This is version 0.2+dev of pymetabind. Changelog:
+ *
+ *      Unreleased: Don't do a Py_DECREF in `pymb_remove_framework` since the
+ *                  interpreter might already be finalized at that point.
  *
  *     Version 0.2: Use a bitmask for `pymb_framework::flags` and add leak_safe
  *      2025-09-11  flag. Change `translate_exception` to be non-throwing.
@@ -176,6 +179,10 @@ PYMB_INLINE void pymb_list_append(struct pymb_list* list,
     node->next = &list->head;
 }
 
+PYMB_INLINE int pymb_list_is_empty(struct pymb_list* list) {
+    return list->head.next == &list->head;
+}
+
 #define PYMB_LIST_FOREACH(type, name, list)      \
     for (type name = (type) (list).head.next;    \
          name != (type) &(list).head;            \
@@ -207,13 +214,11 @@ struct pymb_registry {
     // Linked list of registered `pymb_binding` structures
     struct pymb_list bindings;
 
-    // Borrowed back-reference to the capsule that contains this registry.
-    // Used by pymb_add_framework() and pymb_remove_framework() to manage
-    // the capsule's lifetime.
-    PyObject* capsule;
-
     // Reserved for future extensions; currently set to 0
-    uint32_t reserved;
+    uint16_t reserved;
+
+    // Set to true when the capsule that points to this registry is destroyed
+    uint8_t deallocate_when_empty;
 
 #if defined(Py_GIL_DISABLED)
     // Mutex guarding accesses to `frameworks` and `bindings`.
@@ -586,6 +591,12 @@ PYMB_FUNC struct pymb_binding* pymb_get_binding(PyObject* type);
 
 #if !defined(PYMB_DECLS_ONLY)
 
+PYMB_INLINE void pymb_registry_free(struct pymb_registry* registry) {
+    assert(pymb_list_is_empty(&registry->bindings) &&
+           "some framework was removed before its bindings");
+    free(registry);
+}
+
 PYMB_FUNC void pymb_registry_capsule_destructor(PyObject* capsule) {
     struct pymb_registry* registry =
             (struct pymb_registry*) PyCapsule_GetPointer(
@@ -594,7 +605,10 @@ PYMB_FUNC void pymb_registry_capsule_destructor(PyObject* capsule) {
         PyErr_WriteUnraisable(capsule);
         return;
     }
-    free(registry);
+    registry->deallocate_when_empty = 1;
+    if (pymb_list_is_empty(&registry->frameworks)) {
+        pymb_registry_free(registry);
+    }
 }
 
 /*
@@ -627,18 +641,15 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
     if (registry) {
         pymb_list_init(&registry->frameworks);
         pymb_list_init(&registry->bindings);
+        registry->deallocate_when_empty = 0;
+
         // Attach a destructor so the registry memory is released at teardown
         capsule = PyCapsule_New(registry, "pymetabind_registry",
                                 pymb_registry_capsule_destructor);
         if (!capsule) {
             free(registry);
-        } else {
-            // Store borrowed reference to the capsule to manage registry lifetime
-            // in pymb_add_framework and pymb_remove_framework
-            registry->capsule = capsule;
-            if (PyDict_SetItem(dict, key, capsule) == -1) {
-                registry = NULL; // will be deallocated by capsule destructor
-            }
+        } else if (PyDict_SetItem(dict, key, capsule) == -1) {
+            registry = NULL; // will be deallocated by capsule destructor
         }
         Py_XDECREF(capsule);
     } else {
@@ -674,9 +685,6 @@ PYMB_FUNC void pymb_add_framework(struct pymb_registry* registry,
         }
     }
     pymb_list_append(&registry->frameworks, &framework->link);
-    // Increment capsule reference count so registry stays alive until
-    // all frameworks have been removed
-    Py_INCREF(registry->capsule);
     PYMB_LIST_FOREACH(struct pymb_framework*, other, registry->frameworks) {
         if (other != framework) {
             other->add_foreign_framework(framework);
@@ -720,9 +728,11 @@ PYMB_FUNC void pymb_remove_framework(struct pymb_registry* registry,
         other->remove_foreign_framework(framework);
     }
 
-    // Decrement capsule reference count; registry will be destroyed when
-    // the last framework is removed and interpreter state dict is cleared
-    Py_DECREF(registry->capsule);
+    // Destroy registry if capsule is gone and this was the last framework
+    if (registry->deallocate_when_empty &&
+        pymb_list_is_empty(&registry->frameworks)) {
+        pymb_registry_free(registry);
+    }
 }
 
 /* Add a new binding to the given registry */
