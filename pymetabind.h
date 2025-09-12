@@ -691,7 +691,7 @@ PYMB_FUNC struct pymb_binding* pymb_get_binding(PyObject* type);
 PYMB_INLINE void pymb_registry_free(struct pymb_registry* registry) {
     assert(pymb_list_is_empty(&registry->bindings) &&
            "some framework was removed before its bindings");
-    free(registry->weakref_callback_def);
+    PyMem_Free(registry->weakref_callback_def);
     free(registry);
 }
 
@@ -726,8 +726,7 @@ PYMB_FUNC PyObject* pymb_weakref_callback(PyObject* self, PyObject* const* args,
         return NULL;
     }
     pymb_remove_binding(binding);
-    Py_INCREF(Py_None);
-    return Py_None;
+    Py_RETURN_NONE;
 }
 
 /*
@@ -764,7 +763,7 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
 
         // C doesn't allow inline functions to declare static variables,
         // so allocate this on the heap
-        PyMethodDef* def = (PyMethodDef*) calloc(1, sizeof(PyMethodDef));
+        PyMethodDef* def = (PyMethodDef*) PyMem_Calloc(1, sizeof(PyMethodDef));
         if (!def) {
             free(registry);
             PyErr_NoMemory();
@@ -1008,7 +1007,9 @@ PYMB_FUNC void pymb_remove_binding(struct pymb_binding* binding) {
     // this function, which cannot complete until it acquires the lock we
     // currently hold. If the destructor completed already, we would have bailed
     // out above upon noticing capsule was already NULL.)
-    PyCapsule_SetDestructor(binding->capsule, NULL);
+    if (PyCapsule_SetDestructor(binding->capsule, NULL) != 0) {
+        PyErr_WriteUnraisable((PyObject *) binding->pytype);
+    }
 
     // Mark this binding as being in the process of being destroyed.
     binding->capsule = NULL;
@@ -1035,7 +1036,7 @@ PYMB_FUNC void pymb_remove_binding(struct pymb_binding* binding) {
                                               "pymetabind_binding",
                                               pymb_binding_capsule_destroy);
     if (!capsule_destroy) {
-        // Just leak the binding if we get any errors in this process
+        // Just leak the binding if we can't set up the capsule
         PyErr_WriteUnraisable((PyObject *) binding->pytype);
     } else if (pytype_strong) {
         // Type still alive -> embed the capsule in a cycle so it lasts until
@@ -1043,6 +1044,7 @@ PYMB_FUNC void pymb_remove_binding(struct pymb_binding* binding) {
         PyObject* list = PyList_New(2);
         if (!list) {
             PyErr_WriteUnraisable((PyObject *) binding->pytype);
+            // leak the capsule and therefore the binding
         } else {
             PyList_SetItem(list, 0, capsule_destroy);
             PyList_SetItem(list, 1, list);
@@ -1057,10 +1059,11 @@ PYMB_FUNC void pymb_remove_binding(struct pymb_binding* binding) {
         // the capsule destructor will do the freeing we desire.
         PyObject* callback = PyCFunction_New(registry->weakref_callback_def,
                                              capsule_destroy);
-        Py_DECREF(capsule_destroy); // ownership transferred to callback
         if (!callback) {
             PyErr_WriteUnraisable((PyObject *) binding->pytype);
+            // leak the capsule and therefore the binding
         } else {
+            Py_DECREF(capsule_destroy); // ownership transferred to callback
             binding->pytype_wr = PyWeakref_NewRef((PyObject *) binding->pytype,
                                                   callback);
             Py_DECREF(callback); // ownership transferred to weakref
