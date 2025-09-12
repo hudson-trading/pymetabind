@@ -691,7 +691,7 @@ PYMB_FUNC struct pymb_binding* pymb_get_binding(PyObject* type);
 PYMB_INLINE void pymb_registry_free(struct pymb_registry* registry) {
     assert(pymb_list_is_empty(&registry->bindings) &&
            "some framework was removed before its bindings");
-    PyMem_Free(registry->weakref_callback_def);
+    free(registry->weakref_callback_def);
     free(registry);
 }
 
@@ -761,7 +761,7 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
 
         // C doesn't allow inline functions to declare static variables,
         // so allocate this on the heap
-        PyMethodDef* def = (PyMethodDef*) PyMem_Calloc(1, sizeof(PyMethodDef));
+        PyMethodDef* def = (PyMethodDef*) calloc(1, sizeof(PyMethodDef));
         if (!def) {
             free(registry);
             PyErr_NoMemory();
@@ -769,7 +769,7 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
             return NULL;
         }
         def->ml_name = "pymetabind_weakref_callback";
-        def->ml_meth = (PyCFunction) (void*) pymb_weakref_callback;
+        def->ml_meth = pymb_weakref_callback;
         def->ml_flags = METH_O;
         def->ml_doc = NULL;
         registry->weakref_callback_def = def;
@@ -840,12 +840,6 @@ PYMB_FUNC void pymb_add_framework(struct pymb_registry* registry,
  * If a framework never removes itself, it must not claim to be `leak_safe`.
  */
 PYMB_FUNC void pymb_remove_framework(struct pymb_framework* framework) {
-#if PY_VERSION_HEX >= 0x030d0000
-    // Required on all Python versions, but only 3.13+ has the API to check
-    assert(Py_IsFinalizing() &&
-           "pymb_remove_framework() may only be called during interpreter "
-           "finalization");
-#endif
     struct pymb_registry* registry = framework->registry;
 
     // No need for registry lock/unlock since there are no more threads
