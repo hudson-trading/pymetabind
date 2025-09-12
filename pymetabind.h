@@ -54,6 +54,7 @@
 
 #include <stddef.h>
 #include <assert.h>
+#include <string.h>
 
 #if !defined(PY_VERSION_HEX)
 #  error You must include Python.h before this header
