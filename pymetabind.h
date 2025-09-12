@@ -709,13 +709,11 @@ PYMB_FUNC void pymb_registry_capsule_destructor(PyObject* capsule) {
     }
 }
 
-PYMB_FUNC PyObject* pymb_weakref_callback(PyObject* self, PyObject* const* args,
-                                          Py_ssize_t nargs) {
+PYMB_FUNC PyObject* pymb_weakref_callback(PyObject* self, PyObject* weakref) {
     // self is bound using PyCFunction_New to refer to a capsule that contains
     // the binding pointer (not the binding->capsule; this one has no dtor).
-    // args[0] is the weakref to the bound type, that had this as its callback.
-    if (nargs != 1 || !PyWeakref_CheckRefExact(args[0]) ||
-        !PyCapsule_CheckExact(self)) {
+    // `weakref` is the weakref (to the bound type) that expired.
+    if (!PyWeakref_CheckRefExact(weakref) || !PyCapsule_CheckExact(self)) {
         PyErr_BadArgument();
         return NULL;
     }
@@ -772,7 +770,7 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
         }
         def->ml_name = "pymetabind_weakref_callback";
         def->ml_meth = (PyCFunction) (void*) pymb_weakref_callback;
-        def->ml_flags = METH_FASTCALL;
+        def->ml_flags = METH_O;
         def->ml_doc = NULL;
         registry->weakref_callback_def = def;
 
