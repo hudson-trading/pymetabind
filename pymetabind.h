@@ -6,7 +6,10 @@
  * This functionality is intended to be used by the framework itself,
  * rather than by users of the framework.
  *
- * This is version 0.3 of pymetabind. Changelog:
+ * This is version 0.3+dev of pymetabind. Changelog:
+ *
+ *      Unreleased: Properly return NULL if registry capsule creation fails.
+ *                  Don't use PyInterpreterState on GraalPy.
  *
  *     Version 0.3: Don't do a Py_DECREF in `pymb_remove_framework` since the
  *      2025-09-15  interpreter might already be finalized at that point.
@@ -777,7 +780,7 @@ PYMB_FUNC PyObject* pymb_weakref_callback(PyObject* self, PyObject* weakref) {
  * import lock can provide mutual exclusion.
  */
 PYMB_FUNC struct pymb_registry* pymb_get_registry() {
-#if defined(PYPY_VERSION)
+#if defined(PYPY_VERSION) || defined(GRAALVM_PYTHON)
     PyObject* dict = PyEval_GetBuiltins();
 #elif PY_VERSION_HEX < 0x03090000
     PyObject* dict = PyInterpreterState_GetDict(_PyInterpreterState_Get());
@@ -822,6 +825,7 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
                                 pymb_registry_capsule_destructor);
         if (!capsule) {
             free(registry);
+            registry = NULL;
         } else if (PyDict_SetItem(dict, key, capsule) == -1) {
             registry = NULL; // will be deallocated by capsule destructor
         }
