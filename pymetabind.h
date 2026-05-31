@@ -824,7 +824,7 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
         capsule = PyCapsule_New(registry, "pymetabind_registry",
                                 pymb_registry_capsule_destructor);
         if (!capsule) {
-            free(registry);
+            pymb_registry_free(registry);
             registry = NULL;
         } else if (PyDict_SetItem(dict, key, capsule) == -1) {
             registry = NULL; // will be deallocated by capsule destructor
