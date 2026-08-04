@@ -792,6 +792,40 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
         Py_XDECREF(key);
         return NULL;
     }
+
+#if !defined(PYPY_VERSION) && PY_VERSION_HEX >= 0x030d0000
+    struct pymb_registry* registry =
+            (struct pymb_registry*) calloc(1, sizeof(*registry));
+    if (!registry) {
+        Py_DECREF(key);
+        PyErr_NoMemory();
+        return NULL;
+    }
+    pymb_list_init(&registry->frameworks);
+    pymb_list_init(&registry->bindings);
+    registry->deallocate_when_empty = 0;
+
+    PyObject* capsule = PyCapsule_New(registry, "pymetabind_registry",
+                                      pymb_registry_capsule_destructor);
+    if (!capsule) {
+        free(registry);
+        Py_DECREF(key);
+        return NULL;
+    }
+
+    PyObject* result_capsule = NULL;
+    int status = PyDict_SetDefaultRef(dict, key, capsule, &result_capsule);
+    Py_DECREF(key);
+    Py_DECREF(capsule);
+    if (status < 0) {
+        return NULL;
+    }
+
+    registry = (struct pymb_registry*) PyCapsule_GetPointer(
+            result_capsule, "pymetabind_registry");
+    Py_DECREF(result_capsule);
+    return registry;
+#else
     PyObject* capsule = PyDict_GetItem(dict, key);
     if (capsule) {
         Py_DECREF(key);
@@ -835,6 +869,7 @@ PYMB_FUNC struct pymb_registry* pymb_get_registry() {
     }
     Py_DECREF(key);
     return registry;
+#endif
 }
 
 /*
